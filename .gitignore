@@ -1,0 +1,5 @@
+node_modules
+.next
+.next-webpack
+.next-sessionedge
+.env.local
