@@ -154,6 +154,71 @@ function normalizeConfirmation(value: unknown): SignalConfirmation {
   };
 }
 
+function hasUsableRiskPlan(confirmation: SignalConfirmation) {
+  const entry = confirmation.entry_zone.trim().toLowerCase();
+  const stop = confirmation.stop_loss.trim().toLowerCase();
+
+  return (
+    entry.length > 0 &&
+    stop.length > 0 &&
+    !entry.includes("no valid") &&
+    !stop.includes("no stop") &&
+    confirmation.targets.length > 0
+  );
+}
+
+function hasExplicitAllowedRejectionReason(reasoning: string) {
+  const normalizedReasoning = reasoning.toLowerCase();
+  const rejectionSignals = [
+    "structurally invalid",
+    "invalid structure",
+    "structure is invalid",
+    "no valid structure",
+    "confidence is below",
+    "below threshold",
+    "market context is clearly against",
+    "market context clearly against",
+    "clearly against the trade",
+    "trend is clearly against",
+    "trend clearly against"
+  ];
+
+  return rejectionSignals.some((signal) => normalizedReasoning.includes(signal));
+}
+
+function applyDecisionPolicy(
+  confirmation: SignalConfirmation,
+  settings: UserSettings
+): SignalConfirmation {
+  const threshold = settings.min_confidence_threshold ?? 70;
+  const directionalSignal =
+    confirmation.signal_direction === "long" || confirmation.signal_direction === "short";
+  const structurallyComplete = directionalSignal && hasUsableRiskPlan(confirmation);
+
+  if (confirmation.confidence < threshold) {
+    return {
+      ...confirmation,
+      should_send: false,
+      reasoning: `Rejected because confidence ${confirmation.confidence}% is below the configured ${threshold}% threshold. ${confirmation.reasoning}`
+    };
+  }
+
+  if (
+    !confirmation.should_send &&
+    confirmation.confidence >= threshold &&
+    structurallyComplete &&
+    !hasExplicitAllowedRejectionReason(confirmation.reasoning)
+  ) {
+    return {
+      ...confirmation,
+      should_send: true,
+      reasoning: `Approved because confidence is at or above ${threshold}% and the setup has valid structure with entry, stop, and targets. ${confirmation.reasoning}`
+    };
+  }
+
+  return confirmation;
+}
+
 export async function confirmSignalWithOpenAI(
   payload: TradingViewWebhook,
   settings: UserSettings
@@ -189,13 +254,22 @@ export async function confirmSignalWithOpenAI(
           {
             role: "system",
             content:
-              "You confirm trade-signal quality for a scanner. You never place trades, never give financial advice, and only return strict JSON."
+              "You confirm trade-signal quality for an informational scanner. You never place trades, never give financial advice, and only return strict JSON. Be selective but not overly conservative: valid liquidity sweep reclaim setups with displacement are high-probability structures when risk levels are defined."
           },
           {
             role: "user",
             content: JSON.stringify({
               instruction:
-                `Confirm whether this TradingView alert matches the user's configured market, session, timeframe, and setup. Return JSON only with signal_direction, confidence, entry_zone, stop_loss, targets, reasoning, should_send. should_send must be false if confidence is below ${settings.min_confidence_threshold ?? 70} or risk controls are unclear.`,
+                [
+                  "Confirm whether this TradingView alert should be delivered as an informational signal.",
+                  "Return JSON only with signal_direction, confidence, entry_zone, stop_loss, targets, reasoning, should_send.",
+                  `Reject only when: the setup is structurally invalid, confidence is below ${settings.min_confidence_threshold ?? 70}, or market context is clearly against the trade.`,
+                  "Do not reject solely because setup_type is liquidity_sweep_fvg.",
+                  "Treat liquidity sweep plus reclaim plus displacement as a valid high-probability structure when entry, stop, and target areas are reasonable.",
+                  "Increase confidence weighting for liquidity reclaim, displacement candle, session timing, and trend alignment.",
+                  `If confidence is ${settings.min_confidence_threshold ?? 70} or higher and structure is valid, should_send must be true.`,
+                  "If should_send is false, reasoning must state the exact rejection reason: structurally invalid, confidence below threshold, or market context clearly against the trade."
+                ].join(" "),
               user_settings: settings,
               tradingview_alert: payload
             })
@@ -248,7 +322,7 @@ export async function confirmSignalWithOpenAI(
     const parseCandidate = text || (typeof result === "string" ? result : JSON.stringify(result));
     const jsonObject = extractJsonObject(parseCandidate);
     const parsed = JSON.parse(jsonObject);
-    const normalized = normalizeConfirmation(parsed);
+    const normalized = applyDecisionPolicy(normalizeConfirmation(parsed), settings);
 
     return {
       ...normalized,
