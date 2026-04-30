@@ -8,6 +8,8 @@ export type SignalConfirmation = {
   targets: string[];
   reasoning: string;
   should_send: boolean;
+  raw_openai_response?: unknown;
+  openai_parse_error?: string | null;
 };
 
 export type TradingViewWebhook = {

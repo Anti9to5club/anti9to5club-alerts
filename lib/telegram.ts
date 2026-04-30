@@ -44,7 +44,20 @@ export async function sendTelegramMessage(chatId: string, text: string) {
     })
   });
 
-  if (!response.ok) {
-    throw new Error(`Telegram send failed: ${(await response.text()).slice(0, 240)}`);
+  const responseText = await response.text();
+  let responseBody: unknown = responseText;
+
+  try {
+    responseBody = JSON.parse(responseText);
+  } catch {
+    responseBody = { raw: responseText };
   }
+
+  if (!response.ok) {
+    const error = new Error(`Telegram send failed: ${responseText.slice(0, 240)}`);
+    Object.assign(error, { telegramResponse: responseBody });
+    throw error;
+  }
+
+  return responseBody;
 }

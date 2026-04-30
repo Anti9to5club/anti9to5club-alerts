@@ -39,17 +39,46 @@ export async function POST(request: Request) {
   const confirmation = await confirmSignalWithOpenAI(payload, settings);
   let telegramStatus = "not_sent";
   let telegramError: string | null = null;
+  let telegramResponse: unknown = null;
 
-  if (confirmation.should_send && settings.telegram_chat_id) {
+  if (confirmation.should_send) {
+    if (!settings.telegram_chat_id) {
+      telegramStatus = "failed";
+      telegramError = "Signal was marked should_send=true, but telegram_chat_id is not configured.";
+      console.error("[TradingView webhook] Telegram send blocked", {
+        user_id: settings.user_id,
+        reason: telegramError
+      });
+    } else {
     try {
-      await sendTelegramMessage(
-        settings.telegram_chat_id,
-        formatTelegramSignal(payload, settings, confirmation)
-      );
+        const message = formatTelegramSignal(payload, settings, confirmation);
+        console.log("[TradingView webhook] Sending Telegram signal", {
+          user_id: settings.user_id,
+          symbol: payload.symbol,
+          chat_id: settings.telegram_chat_id
+        });
+
+        telegramResponse = await sendTelegramMessage(settings.telegram_chat_id, message);
       telegramStatus = "sent";
+        console.log("[TradingView webhook] Telegram signal sent", {
+          user_id: settings.user_id,
+          symbol: payload.symbol,
+          response: telegramResponse
+        });
     } catch (error) {
       telegramStatus = "failed";
       telegramError = error instanceof Error ? error.message : "Telegram send failed.";
+        telegramResponse =
+          error instanceof Error && "telegramResponse" in error
+            ? (error as Error & { telegramResponse?: unknown }).telegramResponse ?? null
+            : null;
+        console.error("[TradingView webhook] Telegram signal failed", {
+          user_id: settings.user_id,
+          symbol: payload.symbol,
+          error: telegramError,
+          response: telegramResponse
+        });
+      }
     }
   }
 
@@ -65,7 +94,10 @@ export async function POST(request: Request) {
     reasoning: confirmation.reasoning,
     should_send: confirmation.should_send,
     telegram_status: telegramStatus,
-    telegram_error: telegramError
+    telegram_error: telegramError,
+    telegram_response: telegramResponse,
+    raw_openai_response: confirmation.raw_openai_response ?? null,
+    openai_parse_error: confirmation.openai_parse_error ?? null
   });
 
   if (insertError) {
@@ -78,6 +110,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     ...confirmation,
     telegram_status: telegramStatus,
-    telegram_error: telegramError
+    telegram_error: telegramError,
+    telegram_response: telegramResponse
   });
 }
