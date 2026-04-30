@@ -1,0 +1,88 @@
+//@version=6
+indicator("Anti9to5Club Alerts - Liquidity Sweep Scanner", overlay=true, max_labels_count=500)
+
+// Anti9to5Club Alerts
+// Informational scanner only. This indicator does not place trades and does not provide financial advice.
+//
+// TradingView alert setup note:
+// Pine Script alertcondition() messages must be compile-time constants, so user inputs like webhookSecret
+// cannot be dynamically inserted into alertcondition() messages.
+// To auto-populate webhookSecret from the input, create the TradingView alert using:
+// "Any alert() function call".
+//
+// When creating a TradingView alert:
+// 1. Add this indicator to your chart.
+// 2. Enter your webhook secret in the indicator settings.
+// 3. Create an alert using "Any alert() function call" for automatic JSON messages.
+// 4. Enable Webhook URL and paste your Anti9to5Club Alerts webhook URL.
+// 5. No manual alert message editing is needed when using alert() function calls.
+
+webhookSecret = input.string("", "Webhook secret", tooltip="Used by alert() JSON payloads when you create an alert with Any alert() function call.")
+enableNySession = input.bool(true, "Enable NY session")
+enableLondonSession = input.bool(false, "Enable London session")
+enableAsiaSession = input.bool(false, "Enable Asia session")
+swingLookback = input.int(5, "Swing lookback", minval=2, maxval=50)
+minDisplacementAtr = input.float(1.0, "Minimum displacement size (ATR multiple)", minval=0.1, step=0.1)
+useFvgFilter = input.bool(true, "Require fair value gap confluence")
+showSetupLabels = input.bool(true, "Show setup labels")
+
+nySession = input.session("0930-1600", "NY session time")
+londonSession = input.session("0300-1100", "London session time")
+asiaSession = input.session("2000-0200", "Asia session time")
+
+inNySession = enableNySession and not na(time(timeframe.period, nySession))
+inLondonSession = enableLondonSession and not na(time(timeframe.period, londonSession))
+inAsiaSession = enableAsiaSession and not na(time(timeframe.period, asiaSession))
+inSession = inNySession or inLondonSession or inAsiaSession
+
+atr = ta.atr(14)
+bodySize = math.abs(close - open)
+candleRange = high - low
+
+isBullishDisplacement = close > open and bodySize >= atr * minDisplacementAtr and candleRange > 0 and close >= low + candleRange * 0.65
+isBearishDisplacement = close < open and bodySize >= atr * minDisplacementAtr and candleRange > 0 and close <= high - candleRange * 0.65
+
+// Recent confirmed swing levels. The [1] keeps the active candle from becoming its own breakout level.
+recentSwingHigh = ta.highest(high, swingLookback)[1]
+recentSwingLow = ta.lowest(low, swingLookback)[1]
+
+// Liquidity sweep + reclaim logic.
+bullishSweep = low < recentSwingLow
+bullishReclaim = close > recentSwingLow
+bearishSweep = high > recentSwingHigh
+bearishReclaim = close < recentSwingHigh
+
+// Simple three-candle fair value gap detection.
+// Bullish FVG: current low is above the high two candles ago.
+// Bearish FVG: current high is below the low two candles ago.
+bullishFvg = low > high[2]
+bearishFvg = high < low[2]
+
+fvgBullishPass = not useFvgFilter or bullishFvg
+fvgBearishPass = not useFvgFilter or bearishFvg
+
+bullishSetup = inSession and bullishSweep and bullishReclaim and isBullishDisplacement and fvgBullishPass
+bearishSetup = inSession and bearishSweep and bearishReclaim and isBearishDisplacement and fvgBearishPass
+
+bullishPayload = '{"webhook_secret":"' + webhookSecret + '","symbol":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","market":"NQ","session":"NY","setup_type":"liquidity_sweep_fvg","direction":"long","notes":"Bullish liquidity sweep reclaim setup"}'
+bearishPayload = '{"webhook_secret":"' + webhookSecret + '","symbol":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","market":"NQ","session":"NY","setup_type":"liquidity_sweep_fvg","direction":"short","notes":"Bearish liquidity sweep reclaim setup"}'
+
+plotshape(bullishSetup, title="Bullish setup marker", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="A9 Long")
+
+plotshape(bearishSetup, title="Bearish setup marker", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="A9 Short")
+
+if showSetupLabels and bullishSetup
+    label.new(bar_index, low, "Bullish liquidity sweep\nReclaim + displacement" + (useFvgFilter ? "\nFVG confirmed" : ""), style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black)
+
+if showSetupLabels and bearishSetup
+    label.new(bar_index, high, "Bearish liquidity sweep\nReclaim + displacement" + (useFvgFilter ? "\nFVG confirmed" : ""), style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white)
+
+if bullishSetup
+    alert(bullishPayload, alert.freq_once_per_bar_close)
+
+if bearishSetup
+    alert(bearishPayload, alert.freq_once_per_bar_close)
+
+alertcondition(bullishSetup, title="Bullish setup", message='{"webhook_secret":"SET_ALERT_WITH_ANY_ALERT_FUNCTION_CALL_FOR_INPUT_SECRET","symbol":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","market":"NQ","session":"NY","setup_type":"liquidity_sweep_fvg","direction":"long","notes":"Bullish liquidity sweep reclaim setup"}')
+
+alertcondition(bearishSetup, title="Bearish setup", message='{"webhook_secret":"SET_ALERT_WITH_ANY_ALERT_FUNCTION_CALL_FOR_INPUT_SECRET","symbol":"{{ticker}}","timeframe":"{{interval}}","price":"{{close}}","market":"NQ","session":"NY","setup_type":"liquidity_sweep_fvg","direction":"short","notes":"Bearish liquidity sweep reclaim setup"}')
